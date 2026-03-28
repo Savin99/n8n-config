@@ -1,0 +1,251 @@
+{
+  "name": "DOTMIND Finance Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message", "callback_query"],
+        "additionalFields": {}
+      },
+      "id": "telegram-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.message.photo }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "is-photo",
+      "name": "Is Photo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $credentials.telegramApi.token }}/getFile?file_id={{ $json.message.photo.slice(-1)[0].file_id }}",
+        "options": {}
+      },
+      "id": "get-photo-info",
+      "name": "Get Photo Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [700, 200]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $credentials.telegramApi.token }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "download-photo",
+      "name": "Download Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [920, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Готовим запрос к OpenAI Vision API\nconst items = $input.all();\nlet base64 = '';\nlet chatId = '';\nlet messageText = '';\n\nfor (const item of items) {\n  if (item.binary && item.binary.data) {\n    base64 = item.binary.data.data;\n  }\n  if (item.json.message) {\n    chatId = String(item.json.message.chat.id);\n    messageText = item.json.message.text || '';\n  }\n}\n\n// Сохраняем chatId из предыдущих нод\nif (!chatId) {\n  // Пытаемся получить из Telegram Trigger\n  try {\n    const triggerData = $('Telegram Trigger').first().json;\n    chatId = String(triggerData.message.chat.id);\n  } catch(e) {}\n}\n\nreturn [{\n  json: {\n    base64,\n    chatId,\n    messageText,\n    hasImage: base64.length > 0\n  }\n}];"
+      },
+      "id": "prepare-input",
+      "name": "Prepare GPT Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"temperature\": 0.3,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Ты бот-бухгалтер. Помогаешь вести учет транзакций по двум банкам: Сбер (рубли) и Бакай (доллары).\\n\\nПользователь присылает:\\n- PDF-чеки от Сбербанка\\n- Скриншоты из приложения Бакай банк\\n- Текстовые сообщения для ручного ввода\\n\\nПравила:\\n- Всегда показывай что распознал: сумму, получателя, дату\\n- Если получатель есть в списке подписок - предложи категорию, спроси верно ли\\n- Если получатель новый - спроси категорию\\n- Если в PDF несколько транзакций - покажи все списком\\n- Банк определяй: PDF = Сбер, скриншот = Бакай\\n- Для ручного ввода без валюты: рубли, Сбер\\n- Отвечай коротко и по делу\\n\\nКогда пользователь подтвердил - ответь \\\"Записал: ...\\\" и добавь JSON:\\n```json\\n{\\\"action\\\": \\\"write\\\", \\\"transactions\\\": [{\\\"date\\\": \\\"DD.MM.YYYY\\\", \\\"bank\\\": \\\"Сбер|Бакай\\\", \\\"type\\\": \\\"Доход|Расход|Перевод\\\", \\\"amount\\\": \\\"+120 000 ₽\\\", \\\"recipient\\\": \\\"DOTMIND\\\", \\\"category\\\": \\\"Зарплата\\\", \\\"source\\\": \\\"PDF|Скрин|Бот\\\"}]}\\n```\\nЕсли нужны уточнения - задай вопрос, JSON не нужен.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ $json.hasImage ? JSON.stringify([{\"type\": \"text\", \"text\": \"Распознай чек на фото\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/jpeg;base64,\" + $json.base64}}]) : JSON.stringify($json.messageText || 'Привет') }}\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "gpt-parse",
+      "name": "GPT-4o-mini Parse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Prepare GPT Input').item.json.chatId }}",
+        "text": "={{ $json.choices[0].message.content }}",
+        "additionalFields": {}
+      },
+      "id": "send-reply",
+      "name": "Reply to User",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1580, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.choices[0].message.content }}",
+              "rightValue": "\"action\": \"write\"",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-if-write",
+      "name": "Has JSON to write?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1580, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $input.first().json.choices[0].message.content;\nconst jsonMatch = text.match(/```json\\n?([\\s\\S]*?)```/);\nif (jsonMatch) {\n  const data = JSON.parse(jsonMatch[1]);\n  return data.transactions.map(t => ({ json: t }));\n}\nreturn [];"
+      },
+      "id": "extract-json",
+      "name": "Extract Transactions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 420]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1Np6jHLfIeudk_N5yNQZLQ8Puxkk8MxAKrxdY8gVtinE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Транзакции",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Дата": "={{ $json.date }}",
+            "Банк": "={{ $json.bank }}",
+            "Тип": "={{ $json.type }}",
+            "Сумма": "={{ $json.amount }}",
+            "Получатель": "={{ $json.recipient }}",
+            "Категория": "={{ $json.category }}",
+            "Источник": "={{ $json.source }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "write-to-sheets",
+      "name": "Write to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2020, 420]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Prepare GPT Input').item.json.chatId }}",
+        "text": "=✅ Записано {{ $input.all().length }} транзакций в таблицу",
+        "additionalFields": {}
+      },
+      "id": "confirm-write",
+      "name": "Confirm Write",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [2240, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Текстовое сообщение — отправляем напрямую в GPT\nconst msg = $input.first().json;\nconst chatId = String(msg.message.chat.id);\nconst text = msg.message.text || '';\n\nreturn [{\n  json: {\n    base64: '',\n    chatId,\n    messageText: text,\n    hasImage: false\n  }\n}];"
+      },
+      "id": "prepare-text",
+      "name": "Prepare Text Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 420]
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [{ "node": "Is Photo?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Photo?": {
+      "main": [
+        [{ "node": "Get Photo Info", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Text Input", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Photo Info": {
+      "main": [
+        [{ "node": "Download Photo", "type": "main", "index": 0 }]
+      ]
+    },
+    "Download Photo": {
+      "main": [
+        [{ "node": "Prepare GPT Input", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Text Input": {
+      "main": [
+        [{ "node": "GPT-4o-mini Parse", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare GPT Input": {
+      "main": [
+        [{ "node": "GPT-4o-mini Parse", "type": "main", "index": 0 }]
+      ]
+    },
+    "GPT-4o-mini Parse": {
+      "main": [
+        [
+          { "node": "Reply to User", "type": "main", "index": 0 },
+          { "node": "Has JSON to write?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Has JSON to write?": {
+      "main": [
+        [{ "node": "Extract Transactions", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Extract Transactions": {
+      "main": [
+        [{ "node": "Write to Google Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Write to Google Sheets": {
+      "main": [
+        [{ "node": "Confirm Write", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
